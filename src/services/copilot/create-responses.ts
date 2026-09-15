@@ -17,9 +17,14 @@ export const createResponses = async (payload: ResponsesPayload) => {
     (item) =>
       item.type === "function_call" || item.type === "function_call_output",
   )
+  const enableVision = payload.input.some(
+    (item) =>
+      item.type === "message"
+      && item.content.some((part) => part.type === "input_image"),
+  )
 
   const headers: Record<string, string> = {
-    ...copilotHeaders(state),
+    ...copilotHeaders(state, enableVision),
     "X-Initiator": isAgentCall ? "agent" : "user",
   }
 
@@ -53,7 +58,11 @@ export interface ResponsesPayload {
   stream?: boolean | null
   tools?: Array<ResponseTool> | null
   tool_choice?:
-    "none" | "auto" | "required" | { type: "function"; name: string } | null
+    | "none"
+    | "auto"
+    | "required"
+    | { type: "function"; name: string }
+    | null
   reasoning?: { effort: string } | null
 }
 
@@ -111,7 +120,10 @@ export type ResponseOutputItem =
       id: string
       role: "assistant"
       status: string
-      content: Array<{ type: "output_text"; text: string }>
+      content: Array<
+        | { type: "output_text"; text: string }
+        | { type: "refusal"; refusal: string }
+      >
     }
   | {
       type: "function_call"
@@ -147,6 +159,12 @@ export type ResponseStreamEvent =
     }
   | {
       type: "response.output_text.delta"
+      item_id: string
+      output_index: number
+      delta: string
+    }
+  | {
+      type: "response.refusal.delta"
       item_id: string
       output_index: number
       delta: string
