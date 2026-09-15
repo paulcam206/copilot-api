@@ -176,6 +176,9 @@ export interface ChatCompletionsPayload {
   temperature?: number | null
   top_p?: number | null
   max_tokens?: number | null
+  // The modern OpenAI field. Clients that send this instead of max_tokens must not have
+  // max_tokens injected alongside it: upstream rejects a request carrying both.
+  max_completion_tokens?: number | null
   stop?: string | Array<string> | null
   n?: number | null
   stream?: boolean | null

@@ -39,7 +39,14 @@ export async function handleCompletion(c: Context) {
 
   if (state.manualApprove) await awaitApproval()
 
-  if (isNullish(payload.max_tokens)) {
+  // Only supply a default when the caller expressed no output limit at all. max_completion_tokens
+  // is the modern spelling of the same limit, and upstream refuses a request that carries both
+  // with "max_tokens and max_completion_tokens cannot both be set" -- so injecting max_tokens
+  // beside a caller-supplied max_completion_tokens turns a valid request into a 400.
+  if (
+    isNullish(payload.max_tokens)
+    && isNullish(payload.max_completion_tokens)
+  ) {
     payload = {
       ...payload,
       max_tokens: selectedModel?.capabilities.limits.max_output_tokens,
