@@ -6,6 +6,8 @@
 // Keeping the translation here - rather than in the routes/handlers - means
 // every existing caller of createChatCompletions keeps working unchanged.
 
+import consola from "consola"
+
 import type {
   ChatCompletionChunk,
   ChatCompletionResponse,
@@ -278,6 +280,25 @@ function chatChunk(
   }
 }
 
+/** Places an argument delta against the tool call it belongs to.
+ *
+ * Kept out of the event switch so that switch stays within its complexity budget, and because the
+ * correlation rule is the subtle part: upstream sends a different opaque identifier on
+ * output_item.added than on the argument deltas, so only output_index reliably matches. */
+function toolIndexForArguments(
+  acc: StreamAccumulator,
+  event: { item_id?: string; output_index?: number },
+): number | undefined {
+  const byOutputIndex =
+    event.output_index === undefined ?
+      undefined
+    : acc.toolCallIndexByItemId.get(String(event.output_index))
+  if (byOutputIndex !== undefined) return byOutputIndex
+  return event.item_id === undefined ?
+      undefined
+    : acc.toolCallIndexByItemId.get(event.item_id)
+}
+
 function translateResponseStreamEvent(
   event: ResponseStreamEvent,
   acc: StreamAccumulator,
@@ -309,6 +330,13 @@ function translateResponseStreamEvent(
 
       const index = acc.nextToolIndex
       acc.nextToolIndex += 1
+      // Key by output_index, not item.id. Upstream sends a DIFFERENT identifier on
+      // response.output_item.added than it does on response.function_call_arguments.delta --
+      // observed directly against api.githubcopilot.com -- so an item.id lookup never matched and
+      // every argument delta was dropped. output_index is the identifier both events share, and
+      // it stays correct when a response carries several tool calls. item.id is still recorded so
+      // a stream that does correlate by it keeps working.
+      acc.toolCallIndexByItemId.set(String(event.output_index), index)
       acc.toolCallIndexByItemId.set(item.id, index)
       return [
         chatChunk(acc, {
@@ -324,8 +352,17 @@ function translateResponseStreamEvent(
       ]
     }
     case "response.function_call_arguments.delta": {
-      const index = acc.toolCallIndexByItemId.get(event.item_id)
-      if (index === undefined) return []
+      const index = toolIndexForArguments(acc, event)
+      // Dropping an argument delta silently is how the whole tool call became unusable while the
+      // function name still arrived: the runtime received a named call with no arguments and
+      // correctly refused it. If a delta can no longer be placed, say so rather than discarding it.
+      if (index === undefined) {
+        consola.warn(
+          "Responses translation: unplaceable function_call_arguments delta "
+            + `(output_index=${String(event.output_index)}); tool arguments would be lost`,
+        )
+        return []
+      }
       return [
         chatChunk(acc, {
           tool_calls: [{ index, function: { arguments: event.delta } }],
