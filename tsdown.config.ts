@@ -1,5 +1,7 @@
 import { defineConfig } from "tsdown"
 
+import packageJson from "./package.json" with { type: "json" }
+
 export default defineConfig({
   entry: ["src/main.ts"],
 
@@ -11,7 +13,8 @@ export default defineConfig({
   clean: true,
   removeNodeProtocol: false,
 
-  env: {
-    NODE_ENV: "production",
+  define: {
+    COPILOT_API_VERSION: JSON.stringify(packageJson.version),
+    "process.env.NODE_ENV": JSON.stringify("production"),
   },
 })

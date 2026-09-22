@@ -3,12 +3,56 @@ import { events } from "fetch-event-stream"
 
 import { copilotHeaders, copilotBaseUrl } from "~/lib/api-config"
 import { HTTPError } from "~/lib/error"
+import {
+  chatPayloadToResponsesPayload,
+  responsesResultToChatCompletion,
+  translateResponsesStream,
+} from "~/lib/responses-translation"
 import { state } from "~/lib/state"
+
+import type { Model } from "./get-models"
+
+import { createResponses, type ResponsesResult } from "./create-responses"
+
+// Some models (the GPT reasoning family: gpt-5.x/6.x, gpt-6-astra,
+// mai-code-1.1-flash, ...) are Responses-API-only on Copilot's side -
+// /chat/completions rejects them with "not accessible via the
+// /chat/completions endpoint", regardless of payload shape. Model.
+// supported_endpoints (from GET /models) says so upfront; when it's
+// present and excludes /chat/completions, reroute through /responses and
+// translate the result back, so every existing caller of this function -
+// both the /chat/completions route and the Anthropic-compatible
+// /v1/messages route - keeps working unchanged.
+const supportsChatCompletionsEndpoint = (model: Model | undefined) =>
+  !model?.supported_endpoints
+  || model.supported_endpoints.includes("/chat/completions")
+
+const supportsResponsesEndpoint = (model: Model | undefined) =>
+  model?.supported_endpoints?.includes("/responses") ?? false
+
+const isResponsesNonStreaming = (
+  result: Awaited<ReturnType<typeof createResponses>>,
+): result is ResponsesResult => Object.hasOwn(result, "output")
 
 export const createChatCompletions = async (
   payload: ChatCompletionsPayload,
 ) => {
   if (!state.copilotToken) throw new Error("Copilot token not found")
+
+  const selectedModel = state.models?.data.find((m) => m.id === payload.model)
+
+  if (
+    !supportsChatCompletionsEndpoint(selectedModel)
+    && supportsResponsesEndpoint(selectedModel)
+  ) {
+    consola.debug(
+      `Model ${payload.model} is Responses-API-only, rerouting through /responses`,
+    )
+    const result = await createResponses(chatPayloadToResponsesPayload(payload))
+    return isResponsesNonStreaming(result) ?
+        responsesResultToChatCompletion(result)
+      : translateResponsesStream(result)
+  }
 
   const enableVision = payload.messages.some(
     (x) =>
@@ -71,6 +115,7 @@ export interface ChatCompletionChunk {
 
 interface Delta {
   content?: string | null
+  refusal?: string | null
   role?: "user" | "assistant" | "system" | "tool"
   tool_calls?: Array<{
     index: number
@@ -112,6 +157,7 @@ export interface ChatCompletionResponse {
 interface ResponseMessage {
   role: "assistant"
   content: string | null
+  refusal?: string | null
   tool_calls?: Array<ToolCall>
 }
 
@@ -130,6 +176,9 @@ export interface ChatCompletionsPayload {
   temperature?: number | null
   top_p?: number | null
   max_tokens?: number | null
+  // The modern OpenAI field. Clients that send this instead of max_tokens must not have
+  // max_tokens injected alongside it: upstream rejects a request carrying both.
+  max_completion_tokens?: number | null
   stop?: string | Array<string> | null
   n?: number | null
   stream?: boolean | null
