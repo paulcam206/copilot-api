@@ -1,11 +1,12 @@
 import type { Context } from "hono"
+import type { SSEMessage } from "hono/streaming"
 
 import consola from "consola"
-import { streamSSE } from "hono/streaming"
 
 import { awaitApproval } from "~/lib/approval"
 import { checkRateLimit } from "~/lib/rate-limit"
 import { state } from "~/lib/state"
+import { streamSSE } from "~/lib/stream-sse"
 import {
   createChatCompletions,
   type ChatCompletionChunk,
@@ -54,38 +55,42 @@ export async function handleCompletion(c: Context) {
   }
 
   consola.debug("Streaming response from Copilot")
-  return streamSSE(c, async (stream) => {
-    const streamState: AnthropicStreamState = {
-      messageStartSent: false,
-      contentBlockIndex: 0,
-      contentBlockOpen: false,
-      toolCalls: {},
-    }
-
-    for await (const rawEvent of response) {
-      consola.debug("Copilot raw stream event:", JSON.stringify(rawEvent))
-      if (rawEvent.data === "[DONE]") {
-        break
-      }
-
-      if (!rawEvent.data) {
-        continue
-      }
-
-      const chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
-      const events = translateChunkToAnthropicEvents(chunk, streamState)
-
-      for (const event of events) {
-        consola.debug("Translated Anthropic event:", JSON.stringify(event))
-        await stream.writeSSE({
-          event: event.type,
-          data: JSON.stringify(event),
-        })
-      }
-    }
-  })
+  return streamSSE(c, translateStreamingResponse(response))
 }
 
 const isNonStreaming = (
   response: Awaited<ReturnType<typeof createChatCompletions>>,
 ): response is ChatCompletionResponse => Object.hasOwn(response, "choices")
+
+async function* translateStreamingResponse(
+  response: AsyncIterable<{ data?: string }>,
+): AsyncGenerator<SSEMessage> {
+  const streamState: AnthropicStreamState = {
+    messageStartSent: false,
+    contentBlockIndex: 0,
+    contentBlockOpen: false,
+    toolCalls: {},
+  }
+
+  for await (const rawEvent of response) {
+    consola.debug("Copilot raw stream event:", JSON.stringify(rawEvent))
+    if (rawEvent.data === "[DONE]") {
+      break
+    }
+
+    if (!rawEvent.data) {
+      continue
+    }
+
+    const chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
+    const events = translateChunkToAnthropicEvents(chunk, streamState)
+
+    for (const event of events) {
+      consola.debug("Translated Anthropic event:", JSON.stringify(event))
+      yield {
+        event: event.type,
+        data: JSON.stringify(event),
+      }
+    }
+  }
+}

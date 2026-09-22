@@ -11,6 +11,8 @@ Copilot through an OpenAI-compatible local proxy.
 - `GET /models` and `GET /v1/models` expose `supported_endpoints`. A `null`
   value means the upstream catalog did not report the capability; it does not
   mean Chat Completions is supported.
+- Mid-stream upstream failures terminate the downstream response body with a
+  transport error instead of a clean EOF or a synthetic SSE event.
 - `--version` prints the package version and exits without starting the server.
 
 The Responses translation began with
@@ -43,6 +45,14 @@ The benchmark fleet depends on these behaviors:
 - the server honors `HOST`; the fleet sets it to `127.0.0.1`;
 - the executable remains `dist/main.js`;
 - `--version` writes only the version to stdout;
+- a successful Chat Completions stream ends with `[DONE]`, and a successful
+  Anthropic Messages stream ends with `message_stop`;
+- after headers have been sent, an upstream streaming failure rejects
+  downstream body consumption (for example, fetch reports a terminated body);
+  it does not emit `[DONE]`, `message_stop`, or a synthetic SSE error event;
+- consumers must classify either a body-read failure or a clean EOF without
+  the protocol's success marker as a failed call and must not score the partial
+  content;
 - `/token` and `/usage` remain sensitive and must not be guest-accessible.
 
 ## Build and validation
